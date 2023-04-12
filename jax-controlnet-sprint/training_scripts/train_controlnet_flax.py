@@ -75,6 +75,14 @@ def image_grid(imgs, rows, cols):
     return grid
 
 
+def populate_wandb_table(image_logs, wandb_table, global_step):
+    for log in image_logs:
+        wandb_table.add_data(
+            global_step, log["validation_image"], log["validation_prompt"], [wandb.Image(image) for image in log["images"]]
+        )
+    return wandb_table
+
+
 def log_validation(controlnet, controlnet_params, tokenizer, args, rng, weight_dtype):
     logger.info("Running validation... ")
 
@@ -435,6 +443,11 @@ def parse_args():
         default=None,
         help=("The wandb entity to use (for teams).")
     )
+    parser.agg_argument(
+        "--log_to_wandb_table",
+        action="store_true",
+        help=("Whether to log validation results to a wandb.Table or not.")
+    )
     parser.add_argument(
         "--tracker_project_name",
         type=str,
@@ -666,6 +679,8 @@ def main():
             job_type="train",
             config=args,
         )
+        if args.log_to_wandb_table:
+            wandb_table = wandb.Table(columns=["Epoch", "Global-Step", "Input-Image", "Prompt", "Generated-Image"])
 
     if args.seed is not None:
         set_seed(args.seed)
@@ -1002,7 +1017,9 @@ def main():
                 and global_step % args.validation_steps == 0
                 and jax.process_index() == 0
             ):
-                _ = log_validation(controlnet, state.params, tokenizer, args, validation_rng, weight_dtype)
+                image_logs = log_validation(controlnet, state.params, tokenizer, args, validation_rng, weight_dtype)
+                if args.log_to_wandb_table:
+                    wandb_table = populate_wandb_table(image_logs, wandb_table, global_step)
 
             if global_step % args.logging_steps == 0 and jax.process_index() == 0:
                 if args.report_to == "wandb":
@@ -1027,6 +1044,9 @@ def main():
     if jax.process_index() == 0:
         if args.validation_prompt is not None:
             image_logs = log_validation(controlnet, state.params, tokenizer, args, validation_rng, weight_dtype)
+            if args.log_to_wandb_table:
+                wandb_table = populate_wandb_table(image_logs, wandb_table, global_step)
+                wandb.log({"ControlNet-Validation-Table": wandb_table})
 
         controlnet.save_pretrained(
             args.output_dir,
